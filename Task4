@@ -1,0 +1,120 @@
+This Python program implements a File Integrity Monitoring (FIM) system using the SHA-256 hashing algorithm.
+First, it creates a baseline by calculating and storing hashes of all files in a target directory within a JSON file.
+During monitoring mode, the program continuously scans the directory and recalculates file hashes.
+It compares the current hashes with the baseline to detect file modifications, newly created files, and deleted files.
+When a change is detected, the system generates a timestamped security alert.
+This project demonstrates how cybersecurity professionals use file integrity monitoring to detect unauthorized changes and protect critical systems from potential attacks.
+
+
+import os
+import hashlib
+import time
+import json
+from datetime import datetime
+# Configuration
+MONITOR_DIR = "./critical_files"  # Target directory to watch
+BASELINE_FILE = "fim_baseline.json"  # File where hashes are stored
+CHECK_INTERVAL = 2  # Time in seconds between directory scans
+def calculate_sha256(filepath):
+    """Calculates the SHA-256 hash of a file efficiently by reading in chunks."""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            # Read in 4KB chunks to handle large files smoothly
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except (FileNotFoundError, PermissionError):
+        return None
+def generate_baseline(target_dir, baseline_path):
+    """Scans the target directory and saves file hashes to a baseline JSON file."""
+    print(f"[+] Generating baseline schema for: {target_dir}")
+    baseline = {}
+    if not os.path.exists(target_dir):
+        print(f"[!] Directory '{target_dir}' does not exist. Creating it now.")
+        os.makedirs(target_dir)
+    # Recursively traverse directory structures
+    for root, _, files in os.walk(target_dir):
+        for file in files:
+            full_path = os.path.join(root, file)
+            file_hash = calculate_sha256(full_path)
+            if file_hash:
+                baseline[full_path] = file_hash
+    # Save to JSON database
+    with open(baseline_path, "w", encoding="utf-8") as f:
+        json.dump(baseline, f, indent=4)
+    print(f"[+] Baseline successfully generated with {len(baseline)} tracked files.")
+    print(f"[+] Baseline saved to: {baseline_path}\n")
+def load_baseline(baseline_path):
+    """Loads the baseline database file safely."""
+    try:
+        with open(baseline_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"[-] Critical Error: Baseline file '{baseline_path}' not found.")
+        print("[➔] Please run the script in baseline mode first to initialize data.")
+        return None
+def run_monitor(target_dir, baseline_path):
+    """Continuously monitors the directory against the baseline hashes."""
+    baseline = load_baseline(baseline_path)
+    if baseline is None:
+        return
+    print(f"[+] Monitoring loop active for '{target_dir}'... Press Ctrl+C to stop.")
+    # Track files that have already been alerted on to prevent console flooding
+    alerted_modifications = set()
+    alerted_creations = set()
+    try:
+        while True:
+            current_files = {}
+            # 1. Snapshot the current file states
+            for root, _, files in os.walk(target_dir):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    file_hash = calculate_sha256(full_path)
+                    if file_hash:
+                        current_files[full_path] = file_hash
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 2. Check for modifications and new creations
+            for filepath, current_hash in current_files.items():
+                # Case A: File is completely new
+                if filepath not in baseline:
+                    if filepath not in alerted_creations:
+                        print(f"[{timestamp}] ⚠️ ALERT: New File Created -> {filepath}")
+                        alerted_creations.add(filepath)
+                # Case B: Existing file hash has changed
+                elif baseline[filepath] != current_hash:
+                    if filepath not in alerted_modifications:
+                        print(f"[{timestamp}] 🚨 ALERT: File Modified! -> {filepath}")
+                        alerted_modifications.add(filepath)
+                # Reset alert tracking if file reverts or is stabilised
+                else:
+                    alerted_modifications.discard(filepath)
+            # 3. Check for file deletions
+            deleted_files = []
+            for filepath in baseline:
+                if filepath not in current_files:
+                    print(f"[{timestamp}] ❌ ALERT: File Deleted! -> {filepath}")
+                    deleted_files.append(filepath)
+            # Clean deleted items from baseline database so it doesn't flood alerts
+            for filepath in deleted_files:
+                del baseline[filepath]
+            time.sleep(CHECK_INTERVAL)
+    except KeyboardInterrupt:
+        print("\n[-] Monitoring stopped by user.")
+if __name__ == "__main__":
+    import sys
+    print("=" * 50)
+    print("        Python File Integrity Monitor (FIM)       ")
+    print("=" * 50)
+    print("Usage: python fim.py [baseline | monitor]\n")
+    # Interactive choice if no command-line arguments are given
+    if len(sys.argv) < 2:
+        mode = input("Select operation mode (baseline/monitor): ").strip().lower()
+    else:
+        mode = sys.argv[1].lower()
+    if mode == "baseline":
+        generate_baseline(MONITOR_DIR, BASELINE_FILE)
+    elif mode == "monitor":
+        run_monitor(MONITOR_DIR, BASELINE_FILE)
+    else:
+        print("[-] Invalid argument. Please select either 'baseline' or 'monitor'.")
